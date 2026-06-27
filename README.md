@@ -270,6 +270,9 @@ knowledge-engine/
 │   ├── kuzu_graph.py       # Kùzu 知识图谱
 │   ├── lsi_semantic.py     # LSI 语义索引
 │   ├── book_pipeline.py    # 书籍导入管道
+│   ├── paper_pipeline.py   # 学术文献导入管道
+│   ├── arxiv_helper.py     # arXiv API 工具 + 引用解析
+│   ├── tokenizer.py        # 多语言分词器
 │   ├── config.py           # 配置管理
 │   └── context_manager.py  # 上下文管理
 ├── scripts/
@@ -277,6 +280,49 @@ knowledge-engine/
 │   └── restore.sh          # 恢复脚本
 ├── data/                   # 持久化数据（自动生成）
 └── .venv/                  # Python 虚拟环境
+```
+
+## 学术文献分析
+
+隐光知识引擎支持从 arXiv 直接导入学术论文，自动提取元数据、全文、参考文献并建立引用图谱。
+
+### 导入论文
+
+```bash
+# 从 arXiv ID 导入
+python3 main.py paper 2606.26162
+
+# 导入时重建 LSI 语义索引
+python3 main.py paper 2301.00001 --rebuild-lsi
+```
+
+### 自动完成的分析流程
+
+1. **arXiv API 获取元数据** — 标题、作者、年份、学科分类
+2. **PDF 下载与全文提取** — 自动下载并提取正文文本
+3. **学科自动映射** — arXiv 分类（如 cs.HC）映射到知识引擎学科体系
+4. **关键词提取** — 从标题+摘要中提取核心概念
+5. **参考文献解析** — 自动识别 REFERENCES 章节，提取每条引用的作者、年份、DOI
+6. **引用图谱入库** — 每条引用作为 Kùzu 概念节点，与论文建立 COVERS 关系
+7. **全文索引** — 论文全文进入 Tantivy 索引，支持关键词搜索
+
+### 引用图谱
+
+多篇论文导入后，Kùzu 知识图谱中自然形成引用网络：
+
+```
+论文A ──COVERS──→ 引用[1]
+论文B ──COVERS──→ 引用[1]  (同一篇被多篇引用)
+论文C ──COVERS──→ 引用[2]
+```
+
+支持查询 "哪些论文引用了同一篇文献"、"某篇论文引用了哪些工作"。
+
+### 依赖安装
+
+```bash
+# 论文分析额外依赖
+uv pip install pypdf
 ```
 
 ## 性能指标（实测）

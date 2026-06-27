@@ -156,6 +156,15 @@ def cmd_batch(args):
             print(f"笔记已同步到 Obsidian vault: {args.vault}")
 
 
+def cmd_paper(args):
+    """从 arXiv 导入论文"""
+    from src.paper_pipeline import PaperPipeline
+    with PaperPipeline(persistent=True) as pp:
+        result = pp.import_arxiv(args.arxiv_id, rebuild_lsi=args.rebuild_lsi)
+        if not result:
+            sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="天权知识引擎")
     subparsers = parser.add_subparsers(dest="cmd", help="子命令")
@@ -197,6 +206,11 @@ def main():
     p.add_argument("--vault", default="", help="Obsidian vault 路径")
     p.add_argument("--rebuild-lsi", action="store_true", help="重建 LSI")
     
+    # paper
+    p = subparsers.add_parser("paper", help="从 arXiv 导入论文")
+    p.add_argument("arxiv_id", help="arXiv ID 或 URL")
+    p.add_argument("--rebuild-lsi", action="store_true", default=True, help="重建 LSI")
+    
     args = parser.parse_args()
     
     if args.cmd == "process":
@@ -207,6 +221,8 @@ def main():
         cmd_batch(args)
     elif args.cmd == "import":
         cmd_import(args)
+    elif args.cmd == "paper":
+        cmd_paper(args)
     else:
         parser.print_help()
 
