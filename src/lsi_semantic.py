@@ -3,8 +3,7 @@
 LSI 语义索引层 — TF-IDF + SVD 语义联想
 纯代数，零模型依赖
 """
-import jieba
-import jieba.analyse
+import numpy as np
 import pickle
 import os
 import tempfile
@@ -14,14 +13,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
 
-
-def tokenize_zh(text):
-    return ' '.join(jieba.cut(text))
+from .tokenizer import tokenize, extract_keywords as tk_extract_keywords
 
 
-def extract_keywords(text, topK=20):
-    """用 TextRank 提取关键词（纯图算法）"""
-    return jieba.analyse.textrank(text, topK=topK)
+# 统一使用 tokenizer 模块的接口，不再直接调用 jieba
+tokenize_zh = tokenize
+extract_keywords = tk_extract_keywords
 
 
 class SemanticIndex:

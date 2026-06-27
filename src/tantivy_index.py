@@ -3,15 +3,16 @@
 Tantivy 全文索引层 — 书籍精确检索（支持持久化）
 """
 import tantivy
-import jieba
 import os
 import json
 import tempfile
 import shutil
 
+from .tokenizer import tokenize, tokenize_with_lang, detect_lang
 
-def tokenize_zh(text):
-    return ' '.join(jieba.cut(text))
+
+def tokenize_text(text):
+    return tokenize(text)
 
 
 class BookIndex:
@@ -88,8 +89,8 @@ class BookIndex:
         doc.add_text("title", title)
         doc.add_text("author", author)
         doc.add_text("category", category)
-        doc.add_text("body", tokenize_zh(body))
-        doc.add_text("tags", tokenize_zh(tags))
+        doc.add_text("body", tokenize_text(body))
+        doc.add_text("tags", tokenize_text(tags))
         writer.add_document(doc)
         writer.commit()
         self._num_docs += 1
@@ -105,8 +106,8 @@ class BookIndex:
             doc.add_text("title", book.get("title", ""))
             doc.add_text("author", book.get("author", ""))
             doc.add_text("category", book.get("category", ""))
-            doc.add_text("body", tokenize_zh(book.get("body", "")))
-            doc.add_text("tags", tokenize_zh(book.get("tags", "")))
+            doc.add_text("body", tokenize_text(book.get("body", "")))
+            doc.add_text("tags", tokenize_text(book.get("tags", "")))
             writer.add_document(doc)
         writer.commit()
         del writer
