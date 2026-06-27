@@ -177,7 +177,7 @@ class KnowledgeGraph:
                     'id': row[0],
                     'title': row[1],
                     'author': row[2],
-                    'category': row[3],
+                    'lang': '',
                     'source': 'kuzu',
                     'score': 1.0,
                 })
@@ -207,6 +207,7 @@ class KnowledgeGraph:
                     'title': row[1],
                     'author': row[2],
                     'category': row[3],
+                    'lang': '',
                     'source': 'kuzu',
                     'score': 1.0,
                 })
@@ -251,6 +252,7 @@ class KnowledgeGraph:
                     'id': row[0],
                     'title': row[1],
                     'author': row[2],
+                    'lang': '',
                     'source': 'kuzu',
                     'score': 1.0,
                 })

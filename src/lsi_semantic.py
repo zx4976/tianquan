@@ -100,6 +100,7 @@ class SemanticIndex:
                 'title': meta['title'],
                 'author': meta['author'],
                 'category': meta['category'],
+                'lang': '',
                 'score': score,
                 'source': 'lsi',
             })

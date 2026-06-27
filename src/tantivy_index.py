@@ -37,6 +37,7 @@ class BookIndex:
         sb.add_text_field("category", stored=True)
         sb.add_text_field("body", stored=True)
         sb.add_text_field("tags", stored=True)
+        sb.add_text_field("lang", stored=True)
         return sb.build()
 
     def _open_or_create(self, path):
@@ -80,9 +81,12 @@ class BookIndex:
             except Exception:
                 self._num_docs = 0
 
-    def add_book(self, book_id, title, author, category, body, tags=""):
+    def add_book(self, book_id, title, author, category, body, tags="", lang=""):
         if not self.index:
             raise RuntimeError("索引未初始化")
+        if not lang:
+            from .tokenizer import detect_lang
+            lang = detect_lang(f"{title} {author} {body[:200]}")
         writer = self.index.writer(heap_size=50_000_000, num_threads=2)
         doc = tantivy.Document()
         doc.add_text("book_id", str(book_id))
@@ -91,10 +95,12 @@ class BookIndex:
         doc.add_text("category", category)
         doc.add_text("body", tokenize_text(body))
         doc.add_text("tags", tokenize_text(tags))
+        doc.add_text("lang", lang)
         writer.add_document(doc)
         writer.commit()
         self._num_docs += 1
         self._save_meta()
+        self.reload()
 
     def add_books_batch(self, books):
         if not self.index:
@@ -141,6 +147,7 @@ class BookIndex:
                 'title': doc.get_first("title") or "",
                 'author': doc.get_first("author") or "",
                 'category': doc.get_first("category") or "",
+                'lang': doc.get_first("lang") or "",
                 'score': score,
                 'source': 'tantivy',
             })
@@ -163,6 +170,7 @@ class BookIndex:
                 'title': doc.get_first("title") or "",
                 'author': doc.get_first("author") or "",
                 'category': doc.get_first("category") or "",
+                'lang': doc.get_first("lang") or "",
                 'score': score,
                 'source': 'tantivy',
             })

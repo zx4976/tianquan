@@ -254,7 +254,12 @@ class BookPipeline:
         return True
 
     def search(self, query, limit=10):
-        """全引擎搜索（三路并行 + RRF 融合）"""
+        """全引擎搜索（三路并行 + RRF 融合 + 语言重排序）"""
+        from .tokenizer import detect_lang
+        
+        # 检测查询语言
+        query_lang = detect_lang(query)
+        
         results = []
         
         # 1. Tantivy 精确检索
@@ -273,6 +278,22 @@ class BookPipeline:
         
         # 4. RRF 融合
         fused = rrf.rrf_fusion(results, k=60)
+        
+        # 5. 语言重排序：用 Tantivy 存储的语言字段，不再重新检测
+        latin_family = {'en', 'fr', 'de', 'es', 'it', 'pt', 'nl'}
+        for item in fused:
+            item_lang = item.get('lang', '') or ''
+            boost = 0.0
+            if item_lang == query_lang:
+                boost = 0.3
+            elif query_lang in latin_family and item_lang in latin_family:
+                boost = 0.1
+            
+            base = item.get('rrf_score', item.get('score', 0))
+            item['score'] = base + boost
+        
+        # 按语言加权后的分数重排序
+        fused.sort(key=lambda x: -x.get('score', 0))
         return fused[:limit]
 
     def save_notes_to_obsidian(self, vault_base, results):
