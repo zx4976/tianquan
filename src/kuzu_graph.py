@@ -72,17 +72,17 @@ class KnowledgeGraph:
         try:
             self.conn.execute(
                 "CREATE REL TABLE IF NOT EXISTS COVERS ("
-                "  FROM Book TO Concept, depth INT64, relevance DOUBLE"
+                "  FROM Book TO Concept, depth INT64, relevance DOUBLE, weight INT64"
                 ")"
             )
         except RuntimeError:
             pass
-
+    
         # 关系: 概念→概念
         try:
             self.conn.execute(
                 "CREATE REL TABLE IF NOT EXISTS RELATED_TO ("
-                "  FROM Concept TO Concept, relation STRING, strength DOUBLE"
+                "  FROM Concept TO Concept, relation STRING, strength DOUBLE, weight INT64"
                 ")"
             )
         except RuntimeError:
@@ -136,17 +136,41 @@ class KnowledgeGraph:
             print(f"  ⚠️ 添加概念失败 [{concept_id}]: {e}")
 
     def add_covers(self, book_id, concept_id, depth=1, relevance=0.5):
-        """添加 书→概念 关系"""
+        """添加 书→概念 关系，同关系权重递增（Kremis 风格）"""
         if not self.conn:
             raise RuntimeError("图数据库未初始化")
         try:
             self.conn.execute(
                 f"MATCH (b:Book {{book_id: '{book_id}'}}), "
                 f"(c:Concept {{concept_id: '{concept_id}'}}) "
-                f"MERGE (b)-[:COVERS {{depth: {depth}, relevance: {relevance}}}]->(c)"
+                f"MERGE (b)-[r:COVERS]->(c) "
+                f"ON CREATE SET r.depth = {depth}, r.relevance = {relevance}, r.weight = 1 "
+                f"ON MATCH SET r.weight = r.weight + 1, "
+                f"  r.relevance = CAST(r.relevance * 0.9 + {relevance} * 0.1 AS DOUBLE)"
             )
         except RuntimeError as e:
             print(f"  ⚠️ 添加 COVERS 失败: {e}")
+
+    def link_cooccurring_concepts(self, book_id, concept_ids, window_size=20):
+        """同书内共现的概念自动建边（关联窗口），Kremis 风格"""
+        if not self.conn or len(concept_ids) < 2:
+            return
+        try:
+            for i in range(len(concept_ids) - 1):
+                for j in range(i + 1, min(i + window_size + 1, len(concept_ids))):
+                    a, b = concept_ids[i], concept_ids[j]
+                    if a == b:
+                        continue
+                    self.conn.execute(
+                        f"MATCH (c1:Concept {{concept_id: '{a}'}}), "
+                        f"(c2:Concept {{concept_id: '{b}'}}) "
+                        f"MERGE (c1)-[r:RELATED_TO]->(c2) "
+                        f"ON CREATE SET r.relation = '共现', r.strength = 0.1, r.weight = 1 "
+                        f"ON MATCH SET r.weight = r.weight + 1, "
+                        f"  r.strength = CAST(0.05 + r.strength AS DOUBLE)"
+                    )
+        except RuntimeError as e:
+            print(f"  ⚠️ 链接共现概念失败: {e}")
 
     def add_related_concepts(self, concept_id_a, concept_id_b, relation="相关", strength=0.5):
         """添加 概念→概念 关系"""

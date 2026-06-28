@@ -25,11 +25,28 @@ tar czf "${BACKUP_FILE}" \
     --exclude="__pycache__" \
     --exclude="*.pyc" \
     --exclude=".pytest_cache" \
-    src/ main.py scripts/ data/ docs/ 
+    --exclude=".git" \
+    src/ main.py api_server.py scripts/ data/ docs/ 2>&1
 
-# 3. 校验和
-echo "计算校验和..."
-sha256sum "${BACKUP_FILE}" > "${SHA_FILE}"
+# 生成 SHA256 + BLAKE3 双校验
+sha256sum "${BACKUP_FILE}" > "${BACKUP_FILE}.sha256"
+# 如果 blake3 可用，生成 BLAKE3 哈希
+if command -v python3 &>/dev/null; then
+    python3 -c "
+import hashlib, sys
+# 尝试 blake3
+try:
+    import blake3
+    h = blake3.blake3(open('${BACKUP_FILE}','rb').read()).hexdigest()
+    print(h)
+except ImportError:
+    # 回退到 SHA512
+    h = hashlib.sha512(open('${BACKUP_FILE}','rb').read()).hexdigest()[:64]
+    print(f'SHA512: {h}')
+" > "${BACKUP_FILE}.blake3" 2>/dev/null || true
+fi
+
+echo "校验: $(cat "${BACKUP_FILE}.sha256" | cut -d' ' -f1)"
 
 # 4. 验证
 echo "验证..."
