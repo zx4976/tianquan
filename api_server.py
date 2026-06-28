@@ -107,6 +107,24 @@ class KEHandler(BaseHTTPRequestHandler):
                     "time": datetime.now().isoformat(),
                 })
             
+            # GET /api/synthesize?q=xxx
+            elif path == "/api/synthesize":
+                q = p("q")
+                if not q:
+                    return self._send_error("缺少参数 q")
+                from src.brain_layer import synthesize
+                result = synthesize(q)
+                return self._send_json(result)
+            
+            # GET /api/gap?q=xxx
+            elif path == "/api/gap":
+                q = p("q")
+                if not q:
+                    return self._send_error("缺少参数 q")
+                from src.brain_layer import gap_analysis
+                result = gap_analysis(q)
+                return self._send_json(result)
+            
             else:
                 self._send_error(f"未知路径: {path}", 404)
         

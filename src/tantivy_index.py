@@ -80,21 +80,25 @@ class BookIndex:
                     self._num_docs = json.load(f).get("num_docs", 0)
             except Exception:
                 self._num_docs = 0
-
-    def add_book(self, book_id, title, author, category, body, tags="", lang=""):
+    def add_book(self, book_id, title, author, category, body, tags="", lang="", tokenized=False):
         if not self.index:
             raise RuntimeError("索引未初始化")
         if not lang:
             from .tokenizer import detect_lang
             lang = detect_lang(f"{title} {author} {body[:200]}")
-        writer = self.index.writer(heap_size=50_000_000, num_threads=2)
+        
+        writer = self.index.writer(heap_size=100_000_000, num_threads=4)
         doc = tantivy.Document()
         doc.add_text("book_id", str(book_id))
         doc.add_text("title", title)
         doc.add_text("author", author)
         doc.add_text("category", category)
-        doc.add_text("body", tokenize_text(body))
-        doc.add_text("tags", tokenize_text(tags))
+        if tokenized:
+            doc.add_text("body", body)
+            doc.add_text("tags", tags)
+        else:
+            doc.add_text("body", tokenize_text(body))
+            doc.add_text("tags", tokenize_text(tags))
         doc.add_text("lang", lang)
         writer.add_document(doc)
         writer.commit()
@@ -102,18 +106,25 @@ class BookIndex:
         self._save_meta()
         self.reload()
 
-    def add_books_batch(self, books):
+    def add_books_batch(self, books, tokenized=False):
         if not self.index:
             raise RuntimeError("索引未初始化")
-        writer = self.index.writer(heap_size=200_000_000, num_threads=4)
+        writer = self.index.writer(heap_size=100_000_000, num_threads=4)
         for book in books:
             doc = tantivy.Document()
+            body = str(book.get("body", ""))
+            tags = str(book.get("tags", ""))
             doc.add_text("book_id", str(book.get("book_id", "")))
-            doc.add_text("title", book.get("title", ""))
-            doc.add_text("author", book.get("author", ""))
-            doc.add_text("category", book.get("category", ""))
-            doc.add_text("body", tokenize_text(book.get("body", "")))
-            doc.add_text("tags", tokenize_text(book.get("tags", "")))
+            doc.add_text("title", str(book.get("title", "")))
+            doc.add_text("author", str(book.get("author", "")))
+            doc.add_text("category", str(book.get("category", "")))
+            if tokenized:
+                doc.add_text("body", body)
+                doc.add_text("tags", tags)
+            else:
+                doc.add_text("body", tokenize_text(body))
+                doc.add_text("tags", tokenize_text(tags))
+            doc.add_text("lang", str(book.get("lang", "")))
             writer.add_document(doc)
         writer.commit()
         del writer
@@ -152,6 +163,23 @@ class BookIndex:
                 'source': 'tantivy',
             })
         return results
+
+    def get_body(self, book_id):
+        """按 book_id 获取正文"""
+        if not self.searcher:
+            self.reload()
+        if not self.searcher:
+            return ''
+        try:
+            from tantivy import Occur, Query
+            parser = self.index.parse_query(book_id, default_field_names=['book_id'])
+            hits = self.searcher.search(parser, limit=1).hits
+            if hits:
+                doc = self.searcher.doc(hits[0][1])
+                return doc.get_first("body") or ''
+        except Exception:
+            pass
+        return ''
 
     def search_multi_field(self, query_str, fields=None, limit=10):
         fields = fields or ["title", "body"]

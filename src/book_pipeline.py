@@ -175,8 +175,49 @@ class BookPipeline:
         self.graph = KnowledgeGraph(graph_path) if graph_path else KnowledgeGraph().create_in_memory()
         self.lsi = None
         self.lsi_path = lsi_path
-        self.books_cache = []  # 用于重建 LSI
+        self.vector_index = None
+        self.books_cache = []  # 用于重建 LSI 和向量索引
         self.persistent = persistent
+        
+        # 持久化模式：获取文件锁，防止并发写入
+        self._lock_handle = None
+        self._lock_path = None
+        if persistent:
+            lock_path = os.path.join(os.path.dirname(TANTIVY_INDEX_DIR), '.ke.lock')
+            self._lock_path = lock_path
+            import stat
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                with os.fdopen(fd, 'w') as f:
+                    f.write(str(os.getpid()))
+            except FileExistsError:
+                # 检查锁是否超时（超过60秒认为是死锁）
+                try:
+                    pid_str = open(lock_path).read().strip()
+                    mtime = os.path.getmtime(lock_path)
+                    stale = time.time() - mtime > 60
+                    
+                    # 检查 PID 是否还在运行
+                    if pid_str:
+                        try:
+                            os.kill(int(pid_str), 0)  # 信号0只检测进程是否存在
+                            pid_alive = True
+                        except (OSError, ValueError):
+                            pid_alive = False
+                    else:
+                        pid_alive = False
+                    
+                    if stale or not pid_alive:
+                        os.remove(lock_path)
+                        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                        with os.fdopen(fd, 'w') as f:
+                            f.write(str(os.getpid()))
+                    else:
+                        raise RuntimeError(f"知识引擎数据目录已被其他进程锁定 (PID: {pid_str})")
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    raise RuntimeError(f"知识引擎数据目录已被其他进程锁定: {e}")
         
         # 如果有持久化 LSI，自动加载
         if persistent and lsi_path and os.path.exists(lsi_path):
@@ -199,9 +240,12 @@ class BookPipeline:
         t0 = time.time()
         book_id = book.get('id', str(len(self.books_cache) + 1))
         title = book.get('title', '')
+        title = title.strip('《').strip('》').strip()
         author = book.get('author', '')
         body = book.get('body', '')
         tags = book.get('tags', '')
+        lang = book.get('lang', '')
+        tokenized = book.get('tokenized', False)
         summary = book.get('summary', '')
         concepts = concepts or []
         highlights = highlights or []
@@ -217,6 +261,7 @@ class BookPipeline:
             category=category,
             body=body,
             tags=tags,
+            lang=lang,
         )
         
         # Step 3: 写入 Kùzu 图谱
@@ -244,17 +289,63 @@ class BookPipeline:
         }
 
     def rebuild_lsi(self, n_components=100):
-        """重建 LSI 语义索引"""
+        """重建 LSI 语义索引和向量索引"""
+        if not self.books_cache:
+            # 从持久化存储加载书籍数据
+            try:
+                from .tantivy_index import BookIndex
+                idx = BookIndex(index_path=self.tantivy.index_path) if hasattr(self.tantivy, 'index_path') and self.tantivy.index_path else None
+                if idx and idx.index:
+                    # 读取 Kùzu 获取书籍列表
+                    r = self.graph.conn.execute('MATCH (b:Book) RETURN b.book_id, b.title, b.author, b.category')
+                    while r.has_next():
+                        row = r.get_next()
+                        # 从 Tantivy 读取正文
+                        body = ''
+                        if idx and idx.searcher:
+                            body = idx.get_body(row[0])
+                        self.books_cache.append({
+                            'id': row[0],
+                            'title': row[1],
+                            'author': row[2],
+                            '_category': row[3],
+                            'body': body[:5000],  # LSI 只取前 5000 字符
+                            'lang': '',
+                            'summary': '',
+                        })
+            except Exception as e:
+                print(f"  从持久化加载缓存失败: {e}")
+        
         if not self.books_cache:
             return False
+        
         self.lsi = SemanticIndex(n_components=n_components)
         self.lsi.build(self.books_cache)
+        
+        # 重建向量索引 (gbrain 风格)
+        from .vector_index import VectorIndex
+        self.vector_index = VectorIndex(dim=256)
+        texts = []
+        ids = []
+        metas = []
+        for i, b in enumerate(self.books_cache):
+            texts.append(f"{b.get('title','')} {b.get('summary','')} {b.get('body','')[:2000]}")
+            ids.append(str(b.get('id', i)))
+            metas.append({
+                'title': b.get('title', ''),
+                'author': b.get('author', ''),
+                'category': self.books_cache[i].get('_category', ''),
+                'lang': b.get('lang', ''),
+            })
+        if texts:
+            self.vector_index.fit(texts, ids, metas)
         if self.lsi_path:
             self.lsi.save(self.lsi_path)
         return True
 
+
     def search(self, query, limit=10):
-        """全引擎搜索（三路并行 + RRF 融合 + 语言重排序）"""
+        """全引擎搜索（四路并行 + RRF 融合 + 语言重排序）"""
         from .tokenizer import detect_lang
         
         # 检测查询语言
@@ -276,10 +367,19 @@ class BookPipeline:
             lsi_results = self.lsi.search(query, top_k=limit * 2)
         results.append(lsi_results)
         
-        # 4. RRF 融合
+        # 4. 向量搜索 (gbrain 风格 FAISS 索引)
+        vector_results = []
+        if getattr(self, 'vector_index', None) and self.vector_index.size > 0:
+            try:
+                vector_results = self.vector_index.search(query, k=limit * 2)
+            except Exception:
+                vector_results = []
+        results.append(vector_results)
+        
+        # 5. RRF 融合
         fused = rrf.rrf_fusion(results, k=60)
         
-        # 5. 语言重排序：用 Tantivy 存储的语言字段，不再重新检测
+        # 6. 语言重排序：用 Tantivy 存储的语言字段，不再重新检测
         latin_family = {'en', 'fr', 'de', 'es', 'it', 'pt', 'nl'}
         for item in fused:
             item_lang = item.get('lang', '') or ''
@@ -321,6 +421,11 @@ class BookPipeline:
     def close(self):
         self.tantivy.close()
         self.graph.close()
+        if hasattr(self, '_lock_path') and self._lock_path is not None and os.path.exists(self._lock_path):
+            try:
+                os.remove(self._lock_path)
+            except OSError:
+                pass
 
     def __enter__(self):
         return self
