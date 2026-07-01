@@ -272,6 +272,7 @@ uv pip install tantivy kuzu scikit-learn jieba pypdf
 knowledge-engine/
 ├── main.py                 # 命令行入口                                          
 ├── api_server.py           # REST API 服务                                      
+├── migrate.py              # 记忆迁移工具（只导出核心数据）
 ├── src/                                                                          
 │   ├── __init__.py                                                              
 │   ├── rrf.py              # RRF 融合（纯数学）                                
@@ -283,15 +284,97 @@ knowledge-engine/
 │   ├── book_pipeline.py    # 书籍导入管道                                      
 │   ├── paper_pipeline.py   # 学术文献导入管道                                  
 │   ├── arxiv_helper.py     # arXiv API 工具 + 引用解析                          
-│   ├── memory.py           # AI Agent 个人记忆系统                              
+│   ├── memory.py           # 对话记忆系统（SQLite + 会话快照）                  
+│   ├── understanding.py    # 书籍理解存储（独立数据库，与对话记忆隔离）          
 │   ├── context_manager.py  # 上下文管理                                        
 │   └── config.py           # 配置管理                                          
 ├── scripts/                                                                     
-│   ├── import_shelf.py     # 批量导入脚本（预分词 + 单writer）                  
-│   ├── backup.sh           # 备份脚本                                          
+│   ├── import_shelf.py     # 批量导入脚本（预分词 + 单writer + tqdm进度条）      
+│   ├── progress.py         # 导入进度实时监控（支持 --watch）                    
+│   ├── backup.sh           # 备份脚本  (BLAKE3双校验)                          
 │   └── restore.sh          # 恢复脚本                                          
 ├── data/                   # 持久化数据（自动生成）                            
 └── .venv/                  # Python 虚拟环境（自动生成）                        
+```
+
+## 三层隔离架构
+
+| 层 | 模块 | 用途 | 存储 |
+|---|------|------|------|
+| **层1: 对话记忆** | `memory.py` | 会话快照、身份信息、项目进度 | `~/.hermes/memory.db` (SQLite) |
+| **层2: 书籍索引** | 知识引擎 | 书的原文内容，可分可搜 | `data/` (Tantivy+Kùzu+FAISS) |
+| **层3: 读书理解** | `understanding.py` | 读完后的理解、概念、跨书关联 | `~/.hermes/understanding.db` (SQLite) |
+
+三层物理隔离，使用独立数据库，防止信息污染。对话优先引用层3的理解内容，层2作为原文查证。
+
+## 书籍理解模块
+
+读完一本书后，理解存入独立的 `understanding.db`，不与对话记忆混存：
+
+```python
+from src.understanding import Understanding
+u = Understanding()
+
+u.register_book('shelf_0', '微积分五讲', '龚昇')
+u.add_comprehension('shelf_0', '核心定理', 'Stokes公式统一格林/高斯/斯托克斯三定理', 9)
+u.add_concept('Stokes公式', '微积分', '统一格林高斯斯托克斯的核心定理')
+
+stats = u.stats()  # 查看统计
+```
+
+支持：概念提取、跨书关联、理解记录分级（重要性1-10）。
+
+## 图书导入与进度监控
+
+### 批量导入
+
+```bash
+# 导入前50本
+python3 scripts/import_shelf.py 50
+
+# 导入全部
+python3 scripts/import_shelf.py
+```
+
+导入过程实时写入 `/tmp/import_status.json`，可用进度监控工具查看：
+
+### 进度监控
+
+```bash
+# 查看当前进度
+python3 scripts/progress.py
+
+# 实时监控（每3秒刷新）
+python3 scripts/progress.py --watch
+```
+
+输出示例：
+```
+📊 导入进度
+  阶段: 读取+分词
+  进度: |██████████████░░░░░░| 37/50 (74%)
+  速度: 0.9本/秒  耗时: 43s  ETA: 15s
+  当前: 不定方程及其应用_上
+```
+
+### 性能（实测50本数学书）
+
+| 阶段 | 耗时 | 速度 |
+|------|------|------|
+| 读取+分词 | ~60s | 0.8本/秒 |
+| Tantivy批量写入 | ~2s | 25本/秒 |
+| Kùzu写入 | ~0.7s | 70本/秒 |
+| LSI+向量重建 | ~0.5s | — |
+| **总计** | **~65s** | **0.8本/秒** |
+
+### 系统迁移工具
+
+```bash
+# 只导出记忆和知识，不碰Hermes配置
+python3 migrate.py export /path/to/backup.tar.gz
+
+# 导入到新环境
+python3 migrate.py import /path/to/backup.tar.gz
 ```
 
 ## 学术文献分析
