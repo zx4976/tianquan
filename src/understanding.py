@@ -97,12 +97,66 @@ class Understanding:
         conn.commit()
         conn.close()
 
+    def get_unread_books(self, limit=10):
+        """获取未读的书籍清单"""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT id, title, author, word_count FROM books WHERE status='已索引' ORDER BY read_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        conn.close()
+        return [{'id': r[0], 'title': r[1], 'author': r[2], 'word_count': r[3]} for r in rows]
+
+    def get_read_books(self, limit=10):
+        """获取已读的书籍清单"""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            "SELECT id, title, author, word_count FROM books WHERE status='已读' ORDER BY read_at DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        conn.close()
+        return [{'id': r[0], 'title': r[1], 'author': r[2], 'word_count': r[3]} for r in rows]
+
+    def sync_from_kuzu(self, kuzu_db_path):
+        """从知识引擎同步新书籍（仅新增未注册的）"""
+        import sys
+        sys.path.insert(0, os.path.dirname(kuzu_db_path))
+        from kuzu_graph import KnowledgeGraph
+        kg = KnowledgeGraph(kuzu_db_path)
+        r = kg.conn.execute("MATCH (b:Book) RETURN b.book_id, b.title, b.author, b.category")
+        conn = sqlite3.connect(self.db_path)
+        added = 0
+        while r.has_next():
+            row = r.get_next()
+            bid, title, author, cat = row[0], row[1] or '', row[2] or '', row[3] or ''
+            exists = conn.execute("SELECT count(*) FROM books WHERE id=?", (bid,)).fetchone()[0]
+            if not exists:
+                conn.execute(
+                    "INSERT OR IGNORE INTO books (id, title, author, language, status) VALUES (?, ?, ?, 'zh', '已索引')",
+                    (bid, title, author)
+                )
+                added += 1
+        kg.close()
+        conn.commit()
+        conn.close()
+        return added
+
     def mark_read(self, book_id):
         """标记为已读"""
         conn = sqlite3.connect(self.db_path)
         conn.execute("UPDATE books SET status='已读', read_at=? WHERE id=?", (time.time(), book_id))
         conn.commit()
         conn.close()
+
+    def reading_stats(self):
+        """我的阅读进度"""
+        conn = sqlite3.connect(self.db_path)
+        total = conn.execute("SELECT count(*) FROM books").fetchone()[0]
+        unread = conn.execute("SELECT count(*) FROM books WHERE status='已索引'").fetchone()[0]
+        reading = conn.execute("SELECT count(*) FROM books WHERE status='在读'").fetchone()[0]
+        read = conn.execute("SELECT count(*) FROM books WHERE status='已读'").fetchone()[0]
+        conn.close()
+        return {'总': total, '未读': unread, '在读': reading, '已读': read}
 
     def add_comprehension(self, book_id, dimension, content, importance=5):
         """添加一条理解记录"""
