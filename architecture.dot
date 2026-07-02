@@ -1,0 +1,126 @@
+digraph Tianquan {
+    rankdir=TB;
+    splines=polyline;
+    fontname="Arial";
+    nodesep=0.5;
+    ranksep=0.8;
+    bgcolor="#FFFFFF";
+
+    // === 顶层：书籍源 ===
+    subgraph cluster_sources {
+        label="书籍源文件";
+        style=filled;
+        fillcolor="#F5E6CC";
+        fontsize=14;
+        color="#D4B896";
+
+        book_files[label="读书架/*.md\n(从 Windows SMB 挂载导入)", shape=folder, style=filled, fillcolor="#F5E6CC"];
+    }
+
+    // === 知识引擎 ===
+    subgraph cluster_engine {
+        label="知识引擎 (knowledge-engine)";
+        style=filled;
+        fillcolor="#CCE5F5";
+        fontsize=14;
+        color="#8BB8D4";
+
+        import[label="import_shelf.py\n书籍导入", shape=box, style=filled, fillcolor="#CCE5F5"];
+        tantivy[label="Tantivy\n全文搜索索引\n(2383本，含 body_raw)", shape=cylinder, style=filled, fillcolor="#CCE5F5"];
+        kuzu[label="Kùzu\n知识图谱\n(376本)", shape=cylinder, style=filled, fillcolor="#CCE5F5"];
+        udb[label="understanding.db\n三层架构：记忆/索引/理解", shape=cylinder, style=filled, fillcolor="#F5F0D5"];
+    }
+
+    // === AI Agent ===
+    subgraph cluster_agent {
+        label="AI Agent (天权·隐光)";
+        style=filled;
+        fillcolor="#D5F5D5";
+        fontsize=14;
+        color="#8BD48B";
+
+        read[label="1. 读取原文 body_raw", shape=box, style=filled, fillcolor="#D5F5D5"];
+        understand[label="2. 阅读、理解、提取\natomic knowledge + evidence", shape=box, style=filled, fillcolor="#D5F5D5"];
+    }
+
+    // === TrustForge ===
+    subgraph cluster_forge {
+        label="TrustForge (零信任隔离铸造机)";
+        style=filled;
+        fillcolor="#F5D5D5";
+        fontsize=14;
+        color="#D48B8B";
+
+        // 读书理解流程
+        store[label="store\n三要素+evidence\nLayer 2 验证", shape=box, style=filled, fillcolor="#F5D5D5"];
+        verify_cmd[label="verify\n闭卷推导验证", shape=box, style=filled, fillcolor="#F5D5D5"];
+        audit_label[label="audit\n全书闭卷审计\n5题+3证据", shape=box, style=filled, fillcolor="#F5D5D5"];
+        mark_read[label="mark-read\n标记已读", shape=box, style=filled, fillcolor="#F5D5D5"];
+        derive[label="derive\n符号推导\n(不依赖大模型)", shape=box, style=filled, fillcolor="#F5D5D5"];
+
+        // 开发流程
+        parse[label="parse\n需求解析\n原文锚定", shape=box, style=filled, fillcolor="#F5D5D5"];
+        verify_dsl[label="verify\nDSL逻辑验证\nreq映射/闭环/异常", shape=box, style=filled, fillcolor="#F5D5D5"];
+        compile[label="compile\n代码生成\n+测试生成", shape=box, style=filled, fillcolor="#F5D5D5"];
+        run[label="run\n沙盒执行\n真实测试", shape=box, style=filled, fillcolor="#F5D5D5"];
+
+        pass[label="[通过]", shape=box, style=filled, fillcolor="#D5F5D5"];
+        reject[label="[拒绝]", shape=box, style=filled, fillcolor="#F5D5D5"];
+
+        // 推导引擎
+        det_engine[label="行列式引擎\nitertools枚举", shape=box3d, style=filled, fillcolor="#F5F0D5"];
+        alg_engine[label="线性代数引擎\n模板推导", shape=box3d, style=filled, fillcolor="#F5F0D5"];
+        phys_engine[label="运动学引擎\n数值计算", shape=box3d, style=filled, fillcolor="#F5F0D5"];
+    }
+
+    // === 输出 ===
+    subgraph cluster_output {
+        label="输出";
+        style=filled;
+        fillcolor="#D5D5F5";
+        fontsize=14;
+        color="#8B8BD4";
+
+        obsidian[label="Obsidian 笔记\n/煦林笔记/", shape=note, style=filled, fillcolor="#D5D5F5"];
+        github[label="GitHub\nzx4976/tianquan", shape=note, style=filled, fillcolor="#D5D5F5"];
+        code_out[label="Python 代码\n+ PyTest 测试", shape=note, style=filled, fillcolor="#D5D5F5"];
+    }
+
+    // === 连线 ===
+    book_files -> import;
+    import -> tantivy;
+    import -> kuzu;
+    tantivy -> read;
+    read -> understand;
+    understand -> store;
+    store -> udb;
+    udb -> verify_cmd;
+    udb -> audit_label;
+    udb -> derive;
+
+    // 读书流程
+    store -> verify_cmd;
+    verify_cmd -> audit_label;
+    audit_label -> mark_read;
+    audit_label -> reject;
+    mark_read -> derive;
+    derive -> det_engine;
+    derive -> alg_engine;
+    derive -> phys_engine;
+    det_engine -> pass;
+    alg_engine -> pass;
+    phys_engine -> pass;
+
+    // 开发流程
+    parse -> verify_dsl;
+    verify_dsl -> compile;
+    verify_dsl -> reject;
+    compile -> run;
+    run -> pass;
+    run -> reject;
+
+    // 输出
+    understand -> obsidian;
+    pass -> github;
+    run -> code_out;
+}
