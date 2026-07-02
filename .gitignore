@@ -23,6 +23,10 @@ Thumbs.db
 *.swo
 *.old
 
+# Python 构建
+*.egg-info/
+*.egg
+
 # 临时文件
 tmp_*
 commit_msg.txt
