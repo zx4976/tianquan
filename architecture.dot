@@ -5,6 +5,7 @@ digraph Tianquan {
     nodesep=0.5;
     ranksep=0.8;
     bgcolor="#FFFFFF";
+    label="天权知识系统架构 (2026-07-02)";
 
     // === 顶层：书籍源 ===
     subgraph cluster_sources {
