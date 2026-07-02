@@ -27,6 +27,11 @@ Thumbs.db
 *.egg-info/
 *.egg
 
+# 图片（排除架构图）
+*.png
+!architecture.png
+!architecture.dot
+
 # 临时文件
 tmp_*
 commit_msg.txt
