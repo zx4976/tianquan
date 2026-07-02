@@ -7,65 +7,64 @@
 
 ## 系统架构图
 
-![系统架构图](images/architecture.png)
+```mermaid
+flowchart TB
+    subgraph SRC[书籍源文件]
+        BOOKS[读书架/*.md]
+    end
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        书籍源文件                                │
-│             /读书架/*.md（从 Windows SMB 挂载导入）               │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    知识引擎（knowledge-engine）                   │
-│                                                                  │
-│  职责：书籍导入、索引、搜索、图谱管理                              │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
-│  │   Tantivy    │  │    Kùzu     │  │understanding │           │
-│  │  全文搜索    │  │  知识图谱    │  │    .db       │           │
-│  │  (2383本)   │  │  (376本)    │  │  理解数据    │           │
-│  └──────────────┘  └──────────────┘  └──────────────┘           │
-│         │                                    ▲                   │
-└─────────┼────────────────────────────────────┼───────────────────┘
-          │ 提供原文 (body_raw)                  │ 存入理解
-          ▼                                    │
-┌─────────────────────────────────────────────────────────────────┐
-│               AI Agent                                             │
-│                                                                  │
-│  1. 从知识引擎读取原文                                            │
-│  2. 阅读、理解、提取 atomic knowledge + evidence                  │
-│  3. 调用 TrustForge 验证并存储                                    │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                TrustForge（零信任隔离铸造机）                      │
-│                                                                  │
-│  职责：验证 AI 输出的真实性，拒绝一切无法提供证据的声明              │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              读书理解流程（understand 子命令）              │   │
-│  │                                                          │   │
-│  │  store ──→ verify ──→ audit ──→ mark-read ──→ derive     │   │
-│  │   │           │           │            │          │       │   │
-│  │   │ 三要素    │ 闭卷推导   │ 全书审计   │ 标记已读  │ 符号   │   │
-│  │   │ +evidence│ 验证理解   │ 5题+3证据  │          │ 推导   │   │
-│  │   ▼          ▼           ▼            ▼          ▼       │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              软件开发流程（开发子命令）                     │   │
-│  │                                                          │   │
-│  │  parse ──→ verify ──→ compile ──→ run                    │   │
-│  │   │           │            │          │                   │   │
-│  │   │ 需求解析  │ 逻辑验证   │ 代码生成  │ 沙盒执行          │   │
-│  │   │ +原文锚定 │ req映射    │ +测试生成  │ 真实测试          │   │
-│  │   ▼          ▼            ▼          ▼                   │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+    subgraph KE[知识引擎<br>knowledge-engine]
+        IMPORT[import_shelf.py<br>书籍导入] --> TANTIVY[Tantivy<br>全文搜索索引<br>2383本/含body_raw]
+        IMPORT --> KUZU[Kùzu<br>知识图谱<br>376本]
+        UDB[(understanding.db<br>三层架构)]
+    end
+
+    subgraph AI[AI Agent]
+        READ[1. 读取原文 body_raw] --> UNDERSTAND[2. 阅读/理解/提取<br>atomic knowledge+evidence]
+    end
+
+    subgraph TF[TrustForge<br>零信任隔离铸造机]
+        direction TB
+        subgraph READ_FLOW[读书理解流程]
+            STORE[store<br>三要素+evidence] --> VERIFY[verify<br>闭卷推导验证]
+            VERIFY --> AUDIT[audit<br>全书闭卷审计]
+            AUDIT --> MARK[mark-read<br>标记已读]
+            MARK --> DERIVE[derive<br>符号推导]
+        end
+        subgraph DEV_FLOW[软件开发流程]
+            PARSE[parse<br>需求解析] --> VDSL[verify<br>DSL逻辑验证]
+            VDSL --> COMPILE[compile<br>代码生成]
+            COMPILE --> RUN[run<br>沙盒执行]
+        end
+    end
+
+    subgraph ENGINES[推导引擎]
+        DET[行列式引擎<br>itertools枚举]
+        ALG[线性代数引擎<br>模板推导]
+        PHYS[运动学引擎<br>数值计算]
+    end
+
+    subgraph OUTPUT[输出]
+        OBS[Obsidian 笔记]
+        GH[GitHub]
+        CODE[Python代码+测试]
+    end
+
+    SRC --> KE
+    TANTIVY --> READ
+    UNDERSTAND --> STORE
+    STORE --> UDB
+    UDB --> VERIFY
+    UDB --> AUDIT
+    UDB --> DERIVE
+    DERIVE --> DET & ALG & PHYS
+    RUN --> CODE
+    PASS[✅ 通过] --> GH
+    REJECT[❌ 拒绝] --> UNDERSTAND
 ```
 
+```
+ 
 ---
 
 ## 两个核心组件
