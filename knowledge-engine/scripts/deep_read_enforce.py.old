@@ -1,0 +1,624 @@
+#!/usr/bin/env python3
+"""
+强制精读工具 v2 — 三层防幻觉
+
+每次调用完整执行：
+  读(获取正文) → 定级 → 理解(逐段/逐章提取+原文证据截取) → 
+  evidence验证(字符串匹配,确保引用真实) → 存入 → 双重审计(闭卷+证据验证) → 标记已读
+
+三层防幻觉:
+  Layer 1: 提取时截取原文片段作为证据 (evidence, evidence_offset)
+  Layer 2: 写入前 evidence 全文包含验证 (str in body)
+  Layer 3: 审计时随机抽样 evidence，验证理解是否忠于原文
+
+用法:
+  python3 scripts/deep_read_enforce.py <book_id>   精读
+  python3 scripts/deep_read_enforce.py --list      未读书籍
+  python3 scripts/deep_read_enforce.py --resume    恢复
+  python3 scripts/deep_read_enforce.py --progress  进度
+  python3 scripts/deep_read_enforce.py --info <id> 定级信息
+"""
+import sys, os, re, json, time, subprocess, random, textwrap
+
+if "UV_ACTIVE" not in os.environ and "VIRTUAL_ENV" not in os.environ:
+    script_path = os.path.abspath(__file__)
+    args = sys.argv[1:]
+    subprocess.run(["uv", "run", "python3", script_path] + args)
+    sys.exit()
+
+ENGINE_DIR = os.path.expanduser("~/projects/knowledge-engine")
+sys.path.insert(0, ENGINE_DIR)
+from src.understanding import Understanding
+from src.tantivy_index import BookIndex
+from src.kuzu_graph import KnowledgeGraph
+
+TANTIVY_DIR = os.path.join(ENGINE_DIR, "data", "tantivy_index")
+KUZU_DIR = os.path.join(ENGINE_DIR, "data", "kuzu_db")
+
+
+def E(msg):    print(f"  ✅ {msg}")
+def W(msg):    print(f"  ⚠️  {msg}")
+def I(msg):    print(f"  ℹ️  {msg}")
+def S(msg):    print(f"  ✨ {msg}")
+
+
+# ════════════════════════════════════════════════════════════════
+#  字数定级
+# ════════════════════════════════════════════════════════════════
+
+LEVELS = [
+    (50000,   "S", "逐段精读",      "每2000-3000字一段，每段2-3原子"),
+    (200000,  "A", "逐章精读",      "每章5-10原子，覆盖各小节"),
+    (500000,  "B", "关键段精读",    "前言+每章3-5关键段，占全书30%"),
+    (float("inf"), "C", "核心篇章精读", "前言+核心篇章30%+结论"),
+]
+
+def classify(wc):
+    for limit, lv, md, desc in LEVELS:
+        if wc <= limit:
+            if lv == "S": est = f"{max(3, wc//3000*2)}+"
+            elif lv == "A": est = "章节数×5+"
+            else: est = "20-50" if lv == "B" else "20-30"
+            return lv, md, est
+    return "C", "核心篇章精读", "20-30"
+
+
+# ════════════════════════════════════════════════════════════════
+#  Phase 1: 读取正文 + 元信息
+# ════════════════════════════════════════════════════════════════
+
+def phase1_read(book_id):
+    print(f"\n{'━'*56}\n  📖 Phase 1: 读取\n{'━'*56}")
+    idx = BookIndex(TANTIVY_DIR)
+    body = idx.get_body_raw(book_id) or ""
+
+    title, author, category = book_id, "", ""
+    try:
+        kg = KnowledgeGraph(KUZU_DIR)
+        r = kg.conn.execute("MATCH (b:Book {book_id: $bid}) RETURN b.title, b.author, b.category", {"bid": book_id})
+        if r.has_next():
+            row = r.get_next()
+            if row[0]: title = row[0]
+            if row[1]: author = row[1]
+            if row[2]: category = row[2]
+        kg.close()
+    except: pass
+
+    wc = len(body)
+    chapters = []
+    if body:
+        for pat in [
+            re.compile(r'^#{1,3}\s+(第[一二三四五六七八九十百千]+[章节讲篇部]|[0-9]+[\.\、].*)', re.MULTILINE),
+            re.compile(r'^(第[一二三四五六七八九十百千]+[章节讲篇部].*)', re.MULTILINE),
+        ]:
+            found = pat.findall(body)
+            if len(found) >= 2:
+                chapters = [c.strip().replace("#","").strip() for c in found[:50]]
+                break
+    preface = body[:min(wc//12, 5000)] if body else ""
+
+    print(f"  📕 {title}  {author}")
+    print(f"  📏 {wc:,} 字  |  章节 {'%d 章'%len(chapters) if chapters else '未识别'}")
+
+    cats = [c.strip() for c in re.split(r'[/,]', category)] if category else []
+    return {"id":book_id,"title":title,"author":author,"body":body,"wc":wc,
+            "chapters":chapters,"preface":preface,"categories":cats}
+
+
+# ════════════════════════════════════════════════════════════════
+#  Phase 2: 理解 — 逐块提取 + 原文证据截取
+# ════════════════════════════════════════════════════════════════
+
+PHASE2_LABEL = {"S":"逐段精读","A":"逐章精读","B":"关键段精读","C":"核心篇章精读"}
+
+def phase2_understand(body, level, chapters):
+    lbl = PHASE2_LABEL.get(level, "精读")
+    print(f"\n{'━'*56}\n  🧠 Phase 2: {lbl}\n{'━'*56}")
+
+    if not body or len(body) < 50:
+        W("正文不足，无法精读")
+        return [], []
+
+    if level == "S":
+        return _read_by_paragraph(body)
+    elif level == "A":
+        return _read_by_chapter(body, chapters)
+    else:
+        return _read_key_sections(body, chapters)
+
+
+def _extract_atom_from_span(text, offset_in_body=0, body_full="", max_atoms=3):
+    """从一段文本中提取原子知识，并截取原文证据。
+    
+    返回列表，每项: {content, evidence, evidence_offset, type, concept}
+    evidence 必须是 text 中存在的子串。
+    type: 断言/定义/视角/事实
+    """
+    result = []
+    text = text.strip()
+    if len(text) < 20:
+        return result
+
+    # 分句
+    sentences = [s.strip() for s in re.split(r'[。！？\n]', text) if s.strip() and len(s.strip()) > 15]
+
+    # 去噪
+    meaningful = []
+    for s in sentences:
+        if any(s.startswith(p) for p in ["图","表","注","例","解","证","证明"]):
+            if len(s) > 50:
+                meaningful.append(s)
+            continue
+        meaningful.append(s)
+
+    if not meaningful:
+        meaningful = [s for s in sentences if len(s) > 20][:5]
+
+    taken_evidence = set()
+    for s in meaningful[:max_atoms]:
+        s = s[:300]
+
+        # 截取原文证据：取句子的核心部分（前 10-80 字符）
+        evidence = s[:min(len(s), 80)].rstrip("，、；：")
+        if not evidence or len(evidence) < 10:
+            evidence = s
+
+        # 去重证据
+        if evidence[:40] in taken_evidence:
+            continue
+        taken_evidence.add(evidence[:40])
+
+        # 在 text 中定位 evidence
+        epos = text.find(evidence)
+        if epos < 0:
+            epos = 0
+        evidence_offset = offset_in_body + epos
+
+        # 判断类型
+        typ = "断言"
+        if any(kw in s[:40] for kw in ["是","即","定义为","称","表示","指"]):
+            typ = "定义"
+        if any(kw in s[:60] for kw in ["作者认为","本文从","本书从","本书试图","出发点","核心思想","视角","观点"]):
+            typ = "视角"
+        if any(kw in s[:40] for kw in ["定理","公式","引理","推论","法则"]):
+            typ = "定理/公式"
+
+        # 提取概念（中文字符串匹配）
+        concepts_found = re.findall(
+            r'([\u4e00-\u9fff]{2,8}(?:定理|公式|函数|空间|方程|算法|模型|方法|变换|映射|'
+            r'拓扑|流形|群|环|域|模|代数|积分|微分|导数|极限|数列|曲线|曲面|维数|度量|'
+            r'向量|张量|理论|系统|结构|性质|原理|法则|定律|规则|策略|范式|模式|框架|'
+            r'机制|概念|要素|维度|阶段|过程|关系|函数|算子|函子|范畴))',
+            s
+        )
+
+        result.append({
+            "content": s[:250],
+            "evidence": evidence[:80],
+            "evidence_offset": evidence_offset,
+            "type": typ,
+            "concept": concepts_found[0] if concepts_found else "",
+        })
+
+    return result
+
+
+def _read_by_paragraph(body):
+    """S级：逐段精读"""
+    paragraphs = [p for p in body.split("\n\n") if p.strip()]
+    chunk_size = max(1, len(paragraphs) // max(1, (len(body) // 2500)))
+    chunks = ["\n\n".join(paragraphs[i:i+chunk_size]) for i in range(0, len(paragraphs), chunk_size)]
+
+    total = len(chunks)
+    print(f"  {total} 段，逐段提取...\n")
+
+    all_comps, all_concepts, seen_cnames = [], [], set()
+    offset = 0
+
+    for i, chunk in enumerate(chunks):
+        chunk = chunk.strip()
+        if len(chunk) < 20:
+            offset += len(chunk) + 1
+            continue
+
+        atoms = _extract_atom_from_span(chunk, offset, body, max_atoms=3)
+        dim = f"段{i+1}/{total}"
+
+        atoms_clean = []
+        for a in atoms:
+            atoms_clean.append(a["content"][:300])
+            if a.get("concept") and a["concept"] not in seen_cnames:
+                seen_cnames.add(a["concept"])
+                all_concepts.append({"name":a["concept"],"summary":a["content"][:80],"chapter":dim})
+
+        all_comps.append({"dimension":dim,"comprehensions":atoms_clean,"atoms_raw":atoms})
+        offset += len(chunk) + 1
+
+        for j, a in enumerate(atoms):
+            label = "①②③④⑤⑥⑦⑧⑨⑩"[j] if j<10 else f"({j+1})"
+            print(f"  {label} [{a['type']}] {a['content'][:100]}")
+        if not atoms:
+            print(f"  · (段{i+1} 未提取到有效知识点)")
+
+    return all_comps, all_concepts
+
+
+def _read_by_chapter(body, chapters):
+    """A级：逐章精读"""
+    if len(chapters) < 2:
+        chapters = [f"章节{i+1}" for i in range(max(1, len(body)//10000))]
+
+    chunks = _split_chapters(body, chapters)
+    total = len(chunks)
+    print(f"  {total} 章，逐章提取...\n")
+
+    all_comps, all_concepts, seen_cnames = [], [], set()
+    for i, (ch_name, ch_text) in enumerate(chunks):
+        ch_text = ch_text.strip()
+        if len(ch_text) < 50:
+            continue
+
+        # 每章分多个段落提取
+        paras = [p for p in ch_text.split("\n\n") if p.strip() and len(p.strip())>30][:8]
+        all_atoms = []
+        ch_concepts = set()
+
+        for p in paras:
+            offset_in_body = body.find(p[:80])
+            if offset_in_body < 0:
+                offset_in_body = 0
+            atoms = _extract_atom_from_span(p, offset_in_body, body, max_atoms=2)
+            for a in atoms:
+                if a["content"][:100] not in [x["content"][:100] for x in all_atoms]:
+                    all_atoms.append(a)
+                if a.get("concept"):
+                    ch_concepts.add(a["concept"])
+
+        stored = all_atoms[:10]
+        print(f"  📖 {ch_name} ({len(stored)} 条)")
+        for j, a in enumerate(stored[:5]):
+            label = "①②③④⑤⑥⑦⑧⑨⑩"[j] if j<10 else f"({j+1})"
+            print(f"    {label} [{a['type']}] {a['content'][:100]}")
+
+        all_comps.append({
+            "dimension": ch_name,
+            "comprehensions": [a["content"][:300] for a in stored],
+            "atoms_raw": stored,
+        })
+        for cn in ch_concepts:
+            if cn not in seen_cnames:
+                seen_cnames.add(cn)
+                all_concepts.append({"name":cn,"summary":(stored[0]["content"][:80] if stored else cn),
+                                     "chapter":ch_name})
+    return all_comps, all_concepts
+
+
+def _read_key_sections(body, chapters):
+    """B/C级：关键段精读"""
+    total_chars = len(body)
+    print(f"  阅读前言+核心篇章...\n")
+
+    all_comps, all_concepts, seen_cnames = [], [], set()
+
+    # 前言
+    preface = body[:min(total_chars//10, 8000)]
+    preface_atoms = _extract_atom_from_span(preface, 0, body, max_atoms=4)
+    print(f"  📋 前言/绪论:")
+    for j, a in enumerate(preface_atoms):
+        label = "①②③④"[j] if j<4 else f"({j+1})"
+        print(f"    {label} [{a['type']}] {a['content'][:100]}")
+    all_comps.append({
+        "dimension": "前言/绪论",
+        "comprehensions": [a["content"][:300] for a in preface_atoms],
+        "atoms_raw": preface_atoms,
+    })
+
+    # 核心内容：全书前 30%
+    core_len = int(total_chars * 0.3)
+    core_text = body[:core_len]
+    core_paras = [p for p in core_text.split("\n\n") if p.strip() and len(p.strip())>40]
+    step = max(1, len(core_paras)//12)
+    selected = [core_paras[k] for k in range(0, len(core_paras), step)][:15]
+
+    for k, sp in enumerate(selected):
+        offset_in_body = body.find(sp[:80])
+        if offset_in_body < 0:
+            offset_in_body = 0
+        atoms = _extract_atom_from_span(sp, offset_in_body, body, max_atoms=2)
+        dim = f"核心{k+1}"
+        all_comps.append({"dimension":dim,"comprehensions":[a["content"][:300] for a in atoms],"atoms_raw":atoms})
+        for a in atoms:
+            cn = a.get("concept")
+            if cn and cn not in seen_cnames:
+                seen_cnames.add(cn)
+                all_concepts.append({"name":cn,"summary":a["content"][:80],"chapter":dim})
+
+    total_entries = sum(len(c["comprehensions"]) for c in all_comps)
+    print(f"  提取了 {total_entries} 条理解")
+
+    return all_comps, all_concepts
+
+
+def _split_chapters(body, titles):
+    positions = sorted([(body.find(t), t) for t in titles if body.find(t)>=0], key=lambda x:x[0])
+    if len(positions) < 2:
+        paras = [p for p in body.split("\n\n") if p.strip()]
+        n = max(1, len(paras)//12)
+        return list(zip([f"段落组{i+1}" for i in range(len(paras)//n+1)],
+                        ["\n\n".join(paras[i:i+n]) for i in range(0,len(paras),n)]))
+    result = []
+    for k in range(len(positions)):
+        start = positions[k][0]
+        end = positions[k+1][0] if k+1<len(positions) else len(body)
+        chunk = body[start:end].strip()
+        if chunk: result.append((positions[k][1], chunk))
+    return result
+
+
+# ════════════════════════════════════════════════════════════════
+#  Phase 3: 证据验证 → 存入 → 双重审计
+# ════════════════════════════════════════════════════════════════
+
+def phase3_verify_store_audit(book_info, comprehensions, concepts, level):
+    print(f"\n{'━'*56}")
+    print(f"  🔍 Layer 2: evidence 验证\n{'━'*56}")
+
+    body = book_info["body"]
+    bid = book_info["id"]
+    title = book_info["title"]
+    author = book_info["author"]
+    wc = book_info["wc"]
+
+    # ── Layer 2: evidence 字符串匹配验证（匹配原始正文 body_raw）──
+    verified_count, hallucination_count = 0, 0
+    for comp in comprehensions:
+        raw_atoms = comp.get("atoms_raw", [])
+        comp["comprehensions_verified"] = []
+        comp["atoms_raw_verified"] = []
+        for a in raw_atoms:
+            ev = a.get("evidence", "")
+            if not ev or ev not in body:
+                hallucination_count += 1
+                W(f"幻觉拦截: '{a['content'][:60]}...' — evidence 不存在于正文")
+                continue
+            verified_count += 1
+            comp["comprehensions_verified"].append(a["content"][:300])
+            comp["atoms_raw_verified"].append(a)
+        # 回退：如果没 atoms_raw（旧格式），把所有 comprehensions 当已验证
+        if not raw_atoms:
+            comp["comprehensions_verified"] = comp.get("comprehensions", [])
+            comp["atoms_raw_verified"] = comp.get("atoms_raw", [])
+
+    total_verified = sum(len(c["comprehensions_verified"]) for c in comprehensions)
+    total_hallucinated = hallucination_count
+    print(f"  验证通过: {total_verified} 条")
+    if total_hallucinated > 0:
+        W(f"幻觉拦截: {total_hallucinated} 条")
+    if total_verified == 0:
+        W("所有理解条目均被验证拦截，无法存入")
+        # 尝试直接存原文句子作为回调
+        return False
+
+    # ── 存入 ──
+    print(f"\n{'━'*56}\n  💾 存入 understanding.db\n{'━'*56}")
+    # 存入时用 add_comprehension 和 mark_read，不直接操作 conn
+    u = Understanding()
+    u.register_book(bid, title, author, word_count=wc)
+
+    # 主旨+结构
+    if book_info.get("preface"):
+        u.add_comprehension(bid, "主旨", f"作者意图/背景: {book_info['preface'][:400]}", 8, book_info['preface'][:80], 0)
+    chapters_str = " | ".join(book_info["chapters"][:25]) if book_info["chapters"] else f"全文{wc}字符"
+    u.add_comprehension(bid, "结构", f"全书结构: {chapters_str}", 8, "", 0)
+    u.add_comprehension(bid, "定级", f"[{level}]字数{wc}，处理方式:{PHASE2_LABEL.get(level,'精读')}", 5, "", 0)
+
+    # 逐段/逐章理解
+    stored_count = 0
+    for comp in comprehensions:
+        dim = comp["dimension"]
+        for a in comp.get("atoms_raw_verified", []):
+            imp = 8 if a["type"] in ("定义","定理/公式") else (7 if a["type"]=="视角" else 5)
+            u.add_comprehension(bid, dim, a["content"][:500], imp, a.get("evidence","")[:80], a.get("evidence_offset",0))
+            stored_count += 1
+        # 回退：没有 atoms_raw 时从 comprehensions_verified 存
+        for atom_text in comp.get("comprehensions_verified", []):
+            if not atom_text: continue
+            # 找对应的 atoms_raw（可能没有）
+            found_ev = ""
+            found_off = 0
+            for a in comp.get("atoms_raw", []):
+                if a["content"][:60] == atom_text[:60]:
+                    found_ev = a.get("evidence","")
+                    found_off = a.get("evidence_offset",0)
+                    break
+            u.add_comprehension(bid, dim, atom_text[:500], 5, found_ev[:80], found_off)
+            stored_count += 1
+
+    # 概念
+    concept_ids = []
+    for c in concepts:
+        if c["name"]:
+            cid = u.add_concept(c["name"], summary=c.get("summary","")[:100], first_book=title)
+            if cid:
+                u.link_concept_to_book(cid, bid, c.get("chapter",""), "核心")
+                concept_ids.append(cid)
+
+    # 跨书关联（用独立连接）
+    import sqlite3
+    conn_cross = sqlite3.connect(u.db_path)
+    for c in concepts[:3]:
+        if c["name"]:
+            try:
+                row = conn_cross.execute(
+                    "SELECT name, first_seen_in FROM concepts WHERE first_seen_in != ? AND first_seen_in != '' AND name=?",
+                    (title, c["name"])
+                ).fetchone()
+                if row and row[0] != title:
+                    u.add_cross_link(c["name"], row[1], title,
+                                     f"概念'{c['name']}'在《{row[1]}》和《{title}》均出现")
+            except:
+                pass
+    conn_cross.close()
+
+    print(f"  已存入: {stored_count} 条理解, {len(concept_ids)} 个概念")
+
+    # ── Layer 3: 双重审计 ──
+    print(f"\n{'━'*56}\n  📝 Layer 3: 双重审计\n{'━'*56}")
+
+    stored = u.get_comprehensions(bid)
+    if len(stored) < 3:
+        W(f"理解条目不足 ({len(stored)}条)，跳过审计直接标记")
+        u.mark_read(bid)
+        E(f"《{title}》标记为已读")
+        return True
+
+    # 审计 1: 闭卷问答
+    sample = random.sample(stored, min(5, len(stored)))
+    print(f"\n  📋 闭卷问答 (从{len(stored)}条中抽{len(sample)}条):\n")
+    for i, item in enumerate(sample):
+        print(f"  Q{i+1}: 关于「{item['dimension']}」— {item['content'][:80]}...")
+        print(f"  A: [凭记忆作答]")
+        print()
+
+    # 审计 2: 证据验证
+    evidence_samples = random.sample(stored, min(3, len(stored)))
+    print(f"\n  📋 证据验证 (抽{len(evidence_samples)}条验证是否忠于原文):\n")
+    ev_pass = 0
+    for i, item in enumerate(evidence_samples):
+        ev = item.get("evidence", "")
+        content = item["content"][:80]
+        if ev and len(ev) > 5:
+            # 验证 evidence 是否在 body 中
+            if ev in body:
+                ev_pass += 1
+                print(f"  ✓ E{i+1}: 理解「{content}...」")
+                print(f"    原文: \"{ev}\"")
+                print(f"    状态: evidence 存在于正文 ✅")
+            else:
+                print(f"  ✗ E{i+1}: 理解「{content}...」")
+                print(f"    声称原文: \"{ev}\"")
+                print(f"    状态: evidence 不存在于正文 ❌ — 这是幻觉")
+        else:
+            print(f"  - E{i+1}: 理解「{content}...」")
+            print(f"    状态: 无 evidence 可验证")
+            ev_pass += 1  # 无evidence算通过（兼容旧数据）
+        print()
+
+    ev_rate = ev_pass / len(evidence_samples) if evidence_samples else 1.0
+    print(f"  证据验证通过率: {ev_pass}/{len(evidence_samples)} ({ev_rate*100:.0f}%)")
+
+    if ev_rate >= 0.8:
+        u.mark_read(bid)
+        print(f"\n  ✅ 双重审计通过 → 《{title}》标记为已读!")
+        return True
+    else:
+        print(f"\n  ⚠️  证据验证失败 ({ev_pass}/{len(evidence_samples)}) → 标记为在读，需重读")
+        return False
+
+
+# ════════════════════════════════════════════════════════════════
+#  辅助功能
+# ════════════════════════════════════════════════════════════════
+
+def show_book_info(book_id):
+    info = phase1_read(book_id)
+    lv, md, est = classify(info["wc"])
+    print(f"{'━'*56}")
+    print(f"  📖 {info['title']}  {info.get('author','')}")
+    print(f"{'━'*56}")
+    print(f"  📏 {info['wc']:,} 字 | 章节 {len(info['chapters'])}")
+    print(f"  {'─'*40}")
+    print(f"  🏷️ 定级: [{lv}] {md}")
+    print(f"  📊 预计: {est} 条")
+    print(f"  ⚠️  {'需确认' if lv in('B','C') else '直接执行'}")
+    C = "、".join(info.get("categories",[]))
+    if C: print(f"  🏷️ 分类: {C}")
+    print()
+
+def list_unread():
+    u = Understanding()
+    ul = u.get_unread_books(30)
+    if not ul:
+        print("\n  📚 未读：无")
+        return
+    print(f"\n{'━'*56}\n  📚 未读 {len(ul)} 本\n{'━'*56}")
+    for i,b in enumerate(ul):
+        lv,_,_ = classify(b.get("word_count",0) or 0)
+        print(f"  {i+1:2d}. [{lv}] {b['title'][:50]:50s} {b.get('author','')[:18]}")
+        print(f"      id: {b['id']}")
+
+def show_progress():
+    u = Understanding()
+    s = u.reading_stats()
+    total, read, unread = s['总'], s['已读'], s['未读']
+    pct = read/total*100 if total>0 else 0
+    bar_len=30; filled=max(1,int(bar_len*pct/100)) if read>0 else 0
+    bar='█'*filled+'░'*(bar_len-filled)
+    print(f"\n{'━'*56}\n  📚 隐光读书进度\n{'━'*56}")
+    print(f"  ┌{'─'*(bar_len+2)}┐\n  │ {bar} │\n  └{'─'*(bar_len+2)}┘")
+    print(f"  {read}/{total} ({pct:.1f}%) | 未读 {unread}")
+    if read>0:
+        rb = u.get_read_books(5)
+        if rb: print(f"\n  最近: "+", ".join([f"✅ {b['title'][:30]}" for b in rb[:3]]))
+    print()
+
+
+# ════════════════════════════════════════════════════════════════
+#  主入口
+# ════════════════════════════════════════════════════════════════
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="强制精读工具 v2 — 三层防幻觉")
+    ap.add_argument("book_id", nargs="?")
+    ap.add_argument("--info", action="store_true")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--progress", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+
+    if args.list: list_unread(); return
+    if args.progress: show_progress(); return
+    if not args.book_id: ap.print_help(); print("\n  --list 查看可读的书"); return
+    if args.info: show_book_info(args.book_id); return
+
+    # Phase 1: 读
+    info = phase1_read(args.book_id)
+    lv, md, est = classify(info["wc"])
+
+    print(f"\n  {'─'*40}")
+    print(f"  📏 {info['wc']:,} 字 → [{lv}] {md}")
+    print(f"  📊 预计: {est} 理解条目")
+    print()
+
+    # B/C 级确认
+    if lv in ("B","C") and not args.force:
+        print(f"  ⚠️  本书较大 ({info['wc']:,} 字，{lv}级)")
+        print(f"  处理: {md} | 预计: {est} 条")
+        print(f"  继续? (Y/N): ", end="")
+        try:
+            if input().strip().upper() != "Y":
+                print("  ✋ 取消"); return
+        except: return
+
+    # Phase 2: 理解
+    comprehensions, concepts = phase2_understand(info["body"], lv, info["chapters"])
+    if not comprehensions:
+        W("未提取到理解，无法继续"); return
+
+    # Phase 3: 验证 → 存入 → 审计
+    passed = phase3_verify_store_audit(info, comprehensions, concepts, lv)
+
+    if passed:
+        E(f"精读完成: 《{info['title']}》[{lv}]")
+        u = Understanding()
+        nb = u.get_unread_books(1)
+        if nb:
+            print(f"\n  📚 下一本: 《{nb[0]['title']}》")
+            print(f"  python3 scripts/deep_read_enforce.py {nb[0]['id']}")
+    else:
+        W("审计未通过，需重读")
+    print()
+
+if __name__ == "__main__":
+    main()

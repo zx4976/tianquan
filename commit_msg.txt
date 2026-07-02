@@ -1,0 +1,46 @@
+feat: 零信任隔离铸造机 TrustForge v0.1 与知识引擎理解模块
+
+## 新增功能
+
+### TrustForge（零信任开发验证工具）
+
+- **init / parse / verify / compile / run** — 完整的零信任开发流程
+  - parse: 从需求文档提取带原文坐标锚定的需求切片
+  - verify: 验证 DSL 逻辑完整性（req 映射、状态闭环、异常覆盖）
+  - compile: 确定性编译为 Python 代码 + PyTest 测试
+  - run: 沙盒执行真实测试，通过才标记完成
+
+- **understand 子命令** — 读书理解模块（三要素强制约束）
+  - store: 存入理解（强制由来/核心/应用三要素 + Layer 2 evidence 验证）
+  - status: 查看理解进度
+  - verify: 闭卷推导验证（确认理解后再标记）
+  - audit: 全书闭卷审计（5题问答 + 3条证据验证）
+  - derive: 基于已存知识的符号推导（不依赖大模型参数）
+  - info / list: 书籍信息查询
+
+- **防幻觉推导引擎**
+  - determinant_engine.py: 交错多重线性映射→行列式公式（itertools 符号计算）
+  - algebra_engine.py: 子空间交判定、线性无关判定（模板推导）
+
+- **语义知识匹配** — 同义词组匹配 + 依赖链扩展
+
+### 知识引擎（理解与知识存储）
+
+- **understanding.db 结构调整**
+  - evidence 字段（Layer 2 验证）
+  - knowledge 表（可执行知识，含 LaTeX、代码、依赖链）
+  - inference_rules 表（推理规则存储）
+  - 数据库路径迁移到项目目录，与 AI Agent 个人数据隔离
+
+- **书籍导入**
+  - import_shelf.py 支持 body_raw 字段（原样原文）
+  - Tantivy 索引含 body_raw 字段，精读工具从中读取原文
+
+## 解决的问题
+
+1. **数据隔离** — 开发版 understanding.db 从 ~/.hermes/ 迁移到 projects/ 项目目录
+2. **幻觉拦截** — Layer 2 evidence 字符串匹配验证，伪造引用在写入前被拒绝
+3. **理解质量** — 三要素强制约束（由来/核心/应用），拒绝不完整的理解条目
+4. **可验证推导** — 符号推导引擎不依赖大模型参数，基于已存公理 + itertools/Python 标准库
+5. **DSL 防作弊** — 大模型只能声明实体/状态/API/校验规则，不能写控制流
+6. **沙盒执行** — 测试结果不可篡改，真实运行的结果才算通过
