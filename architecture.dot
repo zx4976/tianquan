@@ -33,7 +33,7 @@ digraph Tianquan {
 
     // === AI Agent ===
     subgraph cluster_agent {
-        label="AI Agent (天权·隐光)";
+        label="AI Agent";
         style=filled;
         fillcolor="#D5F5D5";
         fontsize=14;
@@ -81,7 +81,7 @@ digraph Tianquan {
         fontsize=14;
         color="#8B8BD4";
 
-        obsidian[label="Obsidian 笔记\n/煦林笔记/", shape=note, style=filled, fillcolor="#D5D5F5"];
+        obsidian[label="Obsidian 笔记", shape=note, style=filled, fillcolor="#D5D5F5"];
         github[label="GitHub\nzx4976/tianquan", shape=note, style=filled, fillcolor="#D5D5F5"];
         code_out[label="Python 代码\n+ PyTest 测试", shape=note, style=filled, fillcolor="#D5D5F5"];
     }
