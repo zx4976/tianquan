@@ -21,6 +21,11 @@ trustforge/.trustforge_out/
 Thumbs.db
 *.swp
 *.swo
+*.old
+
+# 临时文件
+tmp_*
+commit_msg.txt
 
 # 环境
 .env
