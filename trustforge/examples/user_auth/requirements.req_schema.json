@@ -1,0 +1,65 @@
+{
+  "title": "requirements",
+  "slices": [
+    {
+      "req_id": "REQ-0002",
+      "title": "trustforge parse 将从此文件生成需求切片",
+      "description": "trustforge parse 将从此文件生成需求切片",
+      "source_section": "sec-2",
+      "source_text": "trustforge parse 将从此文件生成需求切片",
+      "input_params": [],
+      "output_params": [],
+      "actions": []
+    },
+    {
+      "req_id": "REQ-0003",
+      "title": "用户注册",
+      "description": "用户注册\n\n用户通过提供用户名和密码进行注册。\n- 用户名：3-20 个字符，只能包含字母和数字\n- 密码：至少 8 个字符\n- 注册成功后用户状态为\"未激活\"\n- 需要发送激活邮件",
+      "source_section": "sec-3",
+      "source_text": "用户注册\n\n用户通过提供用户名和密码进行注册。\n- 用户名：3-20 个字符，只能包含字母和数字\n- 密码：至少 8 个字符\n- 注册成功后用户状态为\"未激活\"\n- 需要发送激活邮件",
+      "input_params": [],
+      "output_params": [],
+      "actions": []
+    },
+    {
+      "req_id": "REQ-0004",
+      "title": "用户激活",
+      "description": "用户激活\n\n用户通过点击邮件中的激活链接来激活账号。\n- 激活后状态变为\"已激活\"\n- 激活链接 24 小时有效\n- 激活链接只能使用一次",
+      "source_section": "sec-4",
+      "source_text": "用户激活\n\n用户通过点击邮件中的激活链接来激活账号。\n- 激活后状态变为\"已激活\"\n- 激活链接 24 小时有效\n- 激活链接只能使用一次",
+      "input_params": [],
+      "output_params": [],
+      "actions": []
+    },
+    {
+      "req_id": "REQ-0005",
+      "title": "用户登录",
+      "description": "用户登录\n\n已激活的用户可以通过用户名和密码登录。\n- 登录成功后返回 JWT token\n- 登录失败次数超过 5 次，账号被锁定\n- 锁定时间 30 分钟",
+      "source_section": "sec-5",
+      "source_text": "用户登录\n\n已激活的用户可以通过用户名和密码登录。\n- 登录成功后返回 JWT token\n- 登录失败次数超过 5 次，账号被锁定\n- 锁定时间 30 分钟",
+      "input_params": [],
+      "output_params": [],
+      "actions": []
+    },
+    {
+      "req_id": "REQ-0006",
+      "title": "管理员解锁",
+      "description": "管理员解锁\n\n管理员可以手动解锁被锁定的账号。\n- 解锁后状态恢复为\"已激活\"\n- 登录失败次数清零",
+      "source_section": "sec-6",
+      "source_text": "管理员解锁\n\n管理员可以手动解锁被锁定的账号。\n- 解锁后状态恢复为\"已激活\"\n- 登录失败次数清零",
+      "input_params": [],
+      "output_params": [],
+      "actions": []
+    },
+    {
+      "req_id": "REQ-0007",
+      "title": "密码重置",
+      "description": "密码重置\n\n已登录用户可以修改密码。\n- 需要提供旧密码验证\n- 新密码不能与旧密码相同\n- 修改成功后需要重新登录",
+      "source_section": "sec-7",
+      "source_text": "密码重置\n\n已登录用户可以修改密码。\n- 需要提供旧密码验证\n- 新密码不能与旧密码相同\n- 修改成功后需要重新登录",
+      "input_params": [],
+      "output_params": [],
+      "actions": []
+    }
+  ]
+}

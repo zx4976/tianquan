@@ -1,0 +1,111 @@
+{
+  "entities": [
+    {
+      "entity_id": "ENT-0001",
+      "name": "user_account",
+      "req_ref": "REQ-0001",
+      "fields": [
+        {"name": "username", "dtype": "string", "required": true, "constraints": ["长度3-20", "正则a-zA-Z0-9"]},
+        {"name": "password_hash", "dtype": "string", "required": true, "constraints": ["至少8字符"]},
+        {"name": "email", "dtype": "email", "required": true, "constraints": []},
+        {"name": "status", "dtype": "string", "required": true, "constraints": []},
+        {"name": "failed_attempts", "dtype": "int", "required": true, "constraints": []},
+        {"name": "locked_until", "dtype": "date", "required": false, "constraints": []}
+      ],
+      "unique_keys": ["username", "email"]
+    }
+  ],
+  "states": [
+    {"state_id": "ST-0001", "name": "未激活", "req_ref": "REQ-0001", "entry_actions": ["发送激活邮件"]},
+    {"state_id": "ST-0002", "name": "已激活", "req_ref": "REQ-0002", "entry_actions": []},
+    {"state_id": "ST-0003", "name": "已锁定", "req_ref": "REQ-0003", "entry_actions": ["记录锁定时间"]}
+  ],
+  "transitions": [
+    {
+      "trans_id": "TR-0001",
+      "from_state": "ST-0001",
+      "to_state": "ST-0002",
+      "trigger": "点击激活链接",
+      "req_ref": "REQ-0002",
+      "guard_conditions": ["激活链接未过期", "激活链接未使用"]
+    },
+    {
+      "trans_id": "TR-0002",
+      "from_state": "ST-0002",
+      "to_state": "ST-0003",
+      "trigger": "登录失败次数>=5",
+      "req_ref": "REQ-0003",
+      "guard_conditions": []
+    },
+    {
+      "trans_id": "TR-0003",
+      "from_state": "ST-0003",
+      "to_state": "ST-0002",
+      "trigger": "管理员解锁",
+      "req_ref": "REQ-0004",
+      "guard_conditions": []
+    }
+  ],
+  "apis": [
+    {
+      "api_id": "API-0001",
+      "method": "POST",
+      "path": "/api/v1/auth/register",
+      "req_ref": "REQ-0001",
+      "input_params": ["username", "password", "email"],
+      "output_entity": "ENT-0001",
+      "error_codes": ["USERNAME_EXISTS", "EMAIL_EXISTS", "INVALID_USERNAME", "WEAK_PASSWORD",
+                       "USERNAME_REQUIRED", "USERNAME_TOO_SHORT", "USERNAME_TOO_LONG",
+                       "USERNAME_INVALID_CHARS", "PASSWORD_TOO_SHORT", "INVALID_EMAIL"]
+    },
+    {
+      "api_id": "API-0002",
+      "method": "POST",
+      "path": "/api/v1/auth/activate/{token}",
+      "req_ref": "REQ-0002",
+      "input_params": ["token"],
+      "output_entity": "ENT-0001",
+      "error_codes": ["INVALID_TOKEN", "TOKEN_EXPIRED", "TOKEN_ALREADY_USED"]
+    },
+    {
+      "api_id": "API-0003",
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "req_ref": "REQ-0003",
+      "input_params": ["username", "password"],
+      "output_entity": "ENT-0001",
+      "error_codes": ["USER_NOT_FOUND", "INVALID_PASSWORD", "ACCOUNT_LOCKED", "ACCOUNT_NOT_ACTIVATED",
+                       "USERNAME_REQUIRED", "USERNAME_TOO_SHORT", "USERNAME_TOO_LONG",
+                       "USERNAME_INVALID_CHARS", "PASSWORD_TOO_SHORT"]
+    },
+    {
+      "api_id": "API-0004",
+      "method": "POST",
+      "path": "/api/v1/admin/unlock/{username}",
+      "req_ref": "REQ-0004",
+      "input_params": ["username"],
+      "output_entity": "ENT-0001",
+      "error_codes": ["USER_NOT_FOUND", "USER_NOT_LOCKED",
+                       "USERNAME_REQUIRED", "USERNAME_TOO_SHORT", "USERNAME_TOO_LONG",
+                       "USERNAME_INVALID_CHARS"]
+    },
+    {
+      "api_id": "API-0005",
+      "method": "POST",
+      "path": "/api/v1/auth/change-password",
+      "req_ref": "REQ-0005",
+      "input_params": ["old_password", "new_password"],
+      "output_entity": "ENT-0001",
+      "error_codes": ["INVALID_OLD_PASSWORD", "SAME_PASSWORD", "WEAK_PASSWORD"]
+    }
+  ],
+  "validations": [
+    {"rule_id": "VR-0001", "target_field": "username", "rule_type": "required", "error_code": "USERNAME_REQUIRED", "req_ref": "REQ-0001"},
+    {"rule_id": "VR-0002", "target_field": "username", "rule_type": "min_length", "rule_param": "3", "error_code": "USERNAME_TOO_SHORT", "req_ref": "REQ-0001"},
+    {"rule_id": "VR-0003", "target_field": "username", "rule_type": "max_length", "rule_param": "20", "error_code": "USERNAME_TOO_LONG", "req_ref": "REQ-0001"},
+    {"rule_id": "VR-0004", "target_field": "username", "rule_type": "pattern", "rule_param": "^[a-zA-Z0-9]+$", "error_code": "USERNAME_INVALID_CHARS", "req_ref": "REQ-0001"},
+    {"rule_id": "VR-0005", "target_field": "password", "rule_type": "min_length", "rule_param": "8", "error_code": "PASSWORD_TOO_SHORT", "req_ref": "REQ-0001"},
+    {"rule_id": "VR-0006", "target_field": "email", "rule_type": "email", "error_code": "INVALID_EMAIL", "req_ref": "REQ-0001"},
+    {"rule_id": "VR-0007", "target_field": "new_password", "rule_type": "min_length", "rule_param": "8", "error_code": "WEAK_PASSWORD", "req_ref": "REQ-0005"}
+  ]
+}

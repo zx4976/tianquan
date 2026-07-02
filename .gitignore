@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# 数据文件（开发版数据）
+knowledge-engine/data/understanding.db
+knowledge-engine/data/tantivy_index/
+knowledge-engine/data/kuzu_graph/
+knowledge-engine/data/lsi/
+knowledge-engine/data/metadata/
+
+# 编译生成代码
+trustforge/generated/
+trustforge/.trustforge_out/
+
+# 系统
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# 环境
+.env
+*.local
